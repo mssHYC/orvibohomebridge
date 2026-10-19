@@ -9,6 +9,7 @@ import sys
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 COMPONENT_PATH = Path(__file__).parents[1] / "custom_components" / "orvibohomebridge"
 
@@ -154,6 +155,54 @@ class DeviceInventoryTests(unittest.TestCase):
         states["temperature"]["temperature"] = 25.0
         inventory.merge_cloud([reading])
         self.assertEqual(states["temperature"]["temperature"], 25.0)
+
+    def test_smoke_stale_snapshot_seeds_battery_without_alarm(self) -> None:
+        for method in ("initialize", "merge_cloud"):
+            with self.subTest(method=method):
+                inventory, _, states, _ = self.make_inventory()
+                reading = {
+                    "device_id": "smoke", "device_type_raw": 27,
+                    "online_time": 1000, "online": True,
+                    "value1": 1, "value4": 95,
+                    "status": {"value1": 1, "value4": 95},
+                }
+                with patch.object(self.module.time, "time", return_value=10000):
+                    getattr(inventory, method)([reading])
+                self.assertEqual(states["smoke"].get("battery"), 95)
+                self.assertNotIn("smoke_detected", states["smoke"])
+                self.assertFalse(states["smoke"]["state"])
+                self.assertEqual(reading["value4"], 95)
+
+    def test_smoke_snapshot_only_fills_missing_battery(self) -> None:
+        inventory, _, states, _ = self.make_inventory()
+        reading = {"device_id": "smoke", "device_type_raw": 27,
+                   "online_time": 1000, "value1": 1, "value4": 95}
+        with patch.object(self.module.time, "time", return_value=10000):
+            inventory.initialize([dict(reading, value4=None)])
+            inventory.merge_cloud([reading])
+            self.assertEqual(states["smoke"].get("battery"), 95)
+            inventory.state_store.merge(
+                "smoke", {"battery": 90, "smoke_detected": False},
+                self.module.StateSource.LAN, now=0,
+            )
+            with patch.object(self.module.time, "monotonic", return_value=1000):
+                inventory.merge_cloud([reading])
+            self.assertEqual(states["smoke"]["battery"], 90)
+            self.assertFalse(states["smoke"]["smoke_detected"])
+
+    def test_smoke_stale_battery_validates_percentages(self) -> None:
+        for value, expected in ((0, 0), (100, 100), ("95", 95),
+                                (None, None), (-1, None), (255, None),
+                                ("unknown", None), (True, None)):
+            for method in ("initialize", "merge_cloud"):
+                with self.subTest(value=value, method=method):
+                    inventory, _, states, _ = self.make_inventory()
+                    with patch.object(self.module.time, "time", return_value=10000):
+                        getattr(inventory, method)([
+                            {"device_id": "smoke", "device_type_raw": 27,
+                             "online_time": 1000, "value4": value}
+                        ])
+                    self.assertEqual(states["smoke"].get("battery"), expected)
 
     def test_environmental_cloud_snapshot_respects_lan_priority(self) -> None:
         inventory, _, states, _ = self.make_inventory()

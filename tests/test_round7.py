@@ -143,6 +143,7 @@ class CloudValueFreshnessTests(unittest.TestCase):
             UNKNOWN = "unknown"
             DOOR_LOCK = "door_lock"
             CLOTHES_HORSE = "clothes_horse"
+            SMOKE_SENSOR = "smoke_sensor"
 
         class StateStore:
             def __init__(self, states):

@@ -120,6 +120,8 @@ class DeviceInventory:
                         "value4": device.get("value4"),
                     },
                 ).apply_to(state)
+            if category == DeviceCategory.SMOKE_SENSOR:
+                state.update(self._smoke_battery_fallback(device, state))
             if category == DeviceCategory.DOOR_LOCK:
                 state.update(self._battery_state(device))
             elif category == DeviceCategory.CLOTHES_HORSE:
@@ -223,6 +225,10 @@ class DeviceInventory:
                             "value4": device.get("value4"),
                         },
                     ).apply_to(cloud_state)
+            if category == DeviceCategory.SMOKE_SENSOR:
+                cloud_state.update(
+                    self._smoke_battery_fallback(device, self.states[device_id])
+                )
             if cloud_state:
                 self.state_store.merge(
                     device_id, cloud_state, StateSource.CLOUD
@@ -317,6 +323,24 @@ class DeviceInventory:
             state["color_temp"] = None
             state["properties"] = {}
         return state
+
+    @staticmethod
+    def _smoke_battery_fallback(
+        device: dict[str, Any], state: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Fill unknown battery from the last report, never restoring an old alarm."""
+        if state.get("battery") is not None:
+            return {}
+        value = device.get("value4")
+        if isinstance(value, bool):
+            return {}
+        try:
+            battery = float(value)
+        except (TypeError, ValueError):
+            return {}
+        if not 0 <= battery <= 100:
+            return {}
+        return {"battery": int(battery)}
 
     @staticmethod
     def _battery_state(device: dict[str, Any]) -> dict[str, Any]:
