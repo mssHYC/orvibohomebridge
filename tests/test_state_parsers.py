@@ -41,6 +41,16 @@ class StateParserTests(unittest.TestCase):
             cls.device_types,
         ) = _load_modules()
 
+    def test_live_environmental_reading_clears_only_its_fallback_marker(self) -> None:
+        current = {"temperature": 22.9, "temperature_last_known_at": 1,
+                   "battery": 45, "battery_last_known_at": 1}
+        self.sensor.parse_temp_humidity_sensor(
+            current, {"statusType": 22, "value1": 2400}
+        ).apply_to(current)
+        self.assertEqual(current["temperature"], 24.0)
+        self.assertIsNone(current["temperature_last_known_at"])
+        self.assertEqual(current["battery_last_known_at"], 1)
+
     def test_dream_curtain_keeps_position_and_angle_independent(self) -> None:
         state = {"position": 39, "angle": 90}
         self.cover.parse_dream_curtain(

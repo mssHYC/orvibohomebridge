@@ -8,6 +8,7 @@
 - TEMP_HUMIDITY_SENSOR (deviceType=300 subType=491) 温湿度传感器
 - DOOR_WINDOW_SENSOR (deviceType=46) 门窗传感器
 """
+from datetime import datetime, timezone
 import logging
 from typing import Optional
 
@@ -90,6 +91,18 @@ class OrviboSensorBase(CoordinatorEntity, SensorEntity):
     def available(self) -> bool:
         state = self.coordinator.get_device_state(self._device_id)
         return state.get("online", False) if state else False
+
+    @property
+    def extra_state_attributes(self):
+        field = getattr(self, "_last_known_field", None)
+        state = self.coordinator.get_device_state(self._device_id) or {}
+        reported_at = state.get(f"{field}_last_known_at") if field else None
+        if reported_at is None:
+            return {}
+        return {
+            "reading_source": "last_known_cloud",
+            "last_known_at": datetime.fromtimestamp(reported_at, timezone.utc).isoformat(),
+        }
 
     @property
     def device_info(self):
@@ -179,6 +192,8 @@ class OrviboMotionBatterySensor(OrviboSensorBase):
 class OrviboTemperatureSensor(OrviboSensorBase):
     """温湿度传感器 - 温度（deviceType=300 subType=491）。"""
 
+    _last_known_field = "temperature"
+
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
         super().__init__(coordinator, device)
         self._attr_unique_id = f"orvibohomebridge_temp_{self._device_id}"
@@ -200,6 +215,8 @@ class OrviboTemperatureSensor(OrviboSensorBase):
 class OrviboHumiditySensor(OrviboSensorBase):
     """温湿度传感器 - 湿度（deviceType=300 subType=491）。"""
 
+    _last_known_field = "humidity"
+
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
         super().__init__(coordinator, device)
         self._attr_unique_id = f"orvibohomebridge_humidity_{self._device_id}"
@@ -220,6 +237,8 @@ class OrviboHumiditySensor(OrviboSensorBase):
 
 class OrviboBatterySensor(OrviboSensorBase):
     """温湿度传感器 - 电量（deviceType=300 subType=491）。"""
+
+    _last_known_field = "battery"
 
     def __init__(self, coordinator: OrviboMeshCoordinator, device: dict):
         super().__init__(coordinator, device)

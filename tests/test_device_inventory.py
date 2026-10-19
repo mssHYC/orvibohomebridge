@@ -145,15 +145,58 @@ class DeviceInventoryTests(unittest.TestCase):
                 inventory.merge_cloud(readings)
                 self.assertEqual(states["temperature"]["temperature"], 24.0)
 
-    def test_environmental_stale_snapshot_does_not_seed_or_overwrite(self) -> None:
+    def test_environmental_stale_snapshot_seeds_only_missing_readings(self) -> None:
         inventory, _, states, _ = self.make_inventory()
         reading = {"device_id": "temperature", "device_type_raw": 22,
                    "online_time": 1, "value1": 2290, "value4": 45}
         inventory.initialize([reading])
-        self.assertIsNone(states["temperature"].get("temperature"))
+        self.assertEqual(states["temperature"]["temperature"], 22.9)
+        self.assertEqual(states["temperature"]["battery"], 45)
+        self.assertEqual(states["temperature"]["temperature_last_known_at"], 1)
         states["temperature"]["temperature"] = 25.0
         inventory.merge_cloud([reading])
         self.assertEqual(states["temperature"]["temperature"], 25.0)
+
+    def test_stale_environmental_cloud_refresh_and_live_replacement(self) -> None:
+        for device_type, field, slot, value, expected in (
+            (22, "temperature", "value1", 2290, 22.9),
+            (23, "humidity", "value2", 6012, 60.12),
+        ):
+            with self.subTest(device_type=device_type):
+                inventory, _, states, _ = self.make_inventory()
+                reading = {"device_id": "sensor", "device_type_raw": device_type,
+                           "online_time": 1, slot: value, "value4": 45}
+                inventory.merge_cloud([reading])
+                self.assertEqual(states["sensor"][field], expected)
+                self.assertEqual(states["sensor"][field + "_last_known_at"], 1)
+                # Once a live reading exists, an old cloud record cannot roll it back,
+                # even after the normal source-priority guard has elapsed.
+                inventory.state_store.merge(
+                    "sensor", {field: 0.0, field + "_last_known_at": None},
+                    self.module.StateSource.LAN, now=0,
+                )
+                inventory.merge_cloud([reading])
+                self.assertEqual(states["sensor"][field], 0.0)
+                self.assertIsNone(states["sensor"][field + "_last_known_at"])
+                reading["online_time"] = time.time()
+                inventory.merge_cloud([reading])
+                self.assertEqual(states["sensor"][field], expected)
+                self.assertIsNone(states["sensor"][field + "_last_known_at"])
+                self.assertIsNone(states["sensor"]["battery_last_known_at"])
+
+    def test_stale_fallback_requires_dated_environmental_reading(self) -> None:
+        for device_type, timestamp, value in (
+            (22, None, 2290), (22, 1, None), (22, 1, "invalid"), (1, 1, 1),
+        ):
+            with self.subTest(device_type=device_type, timestamp=timestamp, value=value):
+                inventory, _, states, _ = self.make_inventory()
+                inventory.initialize([{
+                    "device_id": "device", "device_type_raw": device_type,
+                    "online_time": timestamp, "value1": value,
+                }])
+                self.assertIsNone(states["device"].get("temperature"))
+                self.assertNotIn("temperature_last_known_at", states["device"])
+                self.assertFalse(states["device"]["state"])
 
     def test_environmental_cloud_snapshot_respects_lan_priority(self) -> None:
         inventory, _, states, _ = self.make_inventory()

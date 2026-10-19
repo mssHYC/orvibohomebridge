@@ -120,6 +120,8 @@ class DeviceInventory:
                         "value4": device.get("value4"),
                     },
                 ).apply_to(state)
+            if not seed_values:
+                self._seed_environmental_last_known(device, state)
             if category == DeviceCategory.DOOR_LOCK:
                 state.update(self._battery_state(device))
             elif category == DeviceCategory.CLOTHES_HORSE:
@@ -141,6 +143,28 @@ class DeviceInventory:
                     }
                 )
             self.states[device_id] = state
+
+    def _seed_environmental_last_known(self, device: dict, state: dict) -> None:
+        """Restore dated ST30 readings only where no runtime reading exists."""
+        if device.get("device_type_raw") not in (22, 23):
+            return
+        reported_at = device.get("online_time")
+        if not isinstance(reported_at, (int, float)) or reported_at <= 0:
+            return
+        parser = get_state_parser(classify_device(device))
+        if parser is None:
+            return
+        patch = parser(state, {
+            "statusType": device["device_type_raw"],
+            "properties": device.get("properties") or {},
+            "value1": device.get("value1"),
+            "value2": device.get("value2"),
+            "value4": device.get("value4"),
+        })
+        for field in ("temperature", "humidity", "battery"):
+            if state.get(field) is None and patch.values.get(field) is not None:
+                state[field] = patch.values[field]
+                state[field + "_last_known_at"] = reported_at
 
     def _cloud_record_fresh(self, device: dict) -> bool:
         """云端 deviceStatus 记录是否新鲜（updateTimeSec 在可信窗口内）。
@@ -223,6 +247,8 @@ class DeviceInventory:
                             "value4": device.get("value4"),
                         },
                     ).apply_to(cloud_state)
+            if not seed_values:
+                self._seed_environmental_last_known(device, self.states[device_id])
             if cloud_state:
                 self.state_store.merge(
                     device_id, cloud_state, StateSource.CLOUD

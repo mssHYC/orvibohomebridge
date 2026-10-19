@@ -72,6 +72,10 @@ def parse_temp_humidity_sensor(
                 updates["battery"] = int(float(raw_status["value4"]))
             except (TypeError, ValueError, OverflowError):
                 pass
+    for field in ("temperature", "humidity", "battery"):
+        marker = field + "_last_known_at"
+        if field in updates and marker in current_state:
+            updates[marker] = None
     return StatePatch(updates)
 
 

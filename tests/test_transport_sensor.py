@@ -138,6 +138,21 @@ class TransportSensorTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = _load_sensor_module()
 
+    def test_environmental_entity_labels_last_known_reading(self):
+        state = {"online": True, "temperature": 22.9,
+                 "temperature_last_known_at": 1}
+        coordinator = SimpleNamespace(get_device_state=lambda _: state)
+        entity = self.module.OrviboTemperatureSensor(
+            coordinator, {"device_id": "sensor", "device_type_raw": 22}
+        )
+        self.assertEqual(entity.native_value, 22.9)
+        self.assertEqual(entity.extra_state_attributes, {
+            "reading_source": "last_known_cloud",
+            "last_known_at": "1970-01-01T00:00:01+00:00",
+        })
+        state["temperature_last_known_at"] = None
+        self.assertEqual(entity.extra_state_attributes, {})
+
     def test_setup_adds_one_transport_marker_per_selected_device(self):
         coordinator = _Coordinator(self.module)
         hass = SimpleNamespace(
