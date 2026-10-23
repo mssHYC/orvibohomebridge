@@ -37,7 +37,7 @@ from .protocol import migrate_password_credentials
 from .models import AccountCredentials
 from .cloud import cloud_for_region
 from .coordinator import OrviboMeshCoordinator
-from .selection import CONF_DEVICE_AREAS, selected_device_ids
+from .selection import configured_device_areas, selected_device_ids
 from .service_handlers import async_register_services
 
 _LOGGER = logging.getLogger(__name__)
@@ -185,15 +185,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     coordinator.start_temp_password_cleanup()
     entry.async_on_unload(coordinator.stop_temp_password_cleanup)
 
+    # 只初始化本次首次注册的设备；已有设备的区域（包括未分配）由 HA 管理。
+    device_registry = dr.async_get(hass)
+    new_device_ids = {
+        device_id
+        for device_id in selected_device_ids(entry.options, coordinator.devices)
+        if device_registry.async_get_device(identifiers={(DOMAIN, device_id)}) is None
+    }
+
     # 使用 async_forward_entry_setups 一次性加载所有平台
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def _apply_after_refresh():
-        """等待 coordinator 第一次刷新完成后再应用区域映射。"""
+        """等待首次刷新完成后，为新设备初始化区域。"""
         if not coordinator.last_update_success:
             await coordinator.async_refresh()
-        await _async_assign_areas(hass, entry)
-        await _apply_device_areas(hass, entry)
+        await _async_assign_areas(hass, entry, new_device_ids)
     
     area_task = hass.async_create_task(_apply_after_refresh())
     entry.async_on_unload(area_task.cancel)
@@ -205,61 +212,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry):
-    """当配置条目更新时重新应用区域映射。"""
-    _LOGGER.info("配置条目已更新，重新应用设备区域映射")
-    await _async_assign_areas(hass, entry)
-    await _apply_device_areas(hass, entry)
+    """重新加载配置，保留 HA 中的设备区域。"""
+    _LOGGER.info("配置条目已更新，重新加载集成")
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def _async_assign_areas(hass: HomeAssistant, entry: ConfigEntry):
-    """将云端房间自动映射为 Home Assistant 区域（orvibo-lan 同款）。"""
+async def _async_assign_areas(
+    hass: HomeAssistant, entry: ConfigEntry, new_device_ids: set[str]
+):
+    """仅为首次导入的新设备初始化区域，不覆盖 HA 中的手动设置。"""
     coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if not coordinator:
         return
     area_registry = ar.async_get(hass)
     device_registry = dr.async_get(hass)
-    selected = selected_device_ids(entry.options, coordinator.devices)
-    for device_id, device in coordinator.devices.items():
-        if device_id not in selected:
+    device_areas = configured_device_areas(entry.options)
+    for device_id in new_device_ids:
+        device = coordinator.devices.get(device_id)
+        if device is None:
             continue
-        room_name = device.get("room_name")
-        if not room_name:
-            continue
-        area = area_registry.async_get_area_by_name(room_name)
-        if area is None:
-            area = area_registry.async_create(room_name)
         device_entry = device_registry.async_get_device(
             identifiers={(DOMAIN, device_id)}
         )
-        if device_entry is not None and device_entry.area_id != area.id:
-            device_registry.async_update_device(device_entry.id, area_id=area.id)
-
-
-async def _apply_device_areas(hass: HomeAssistant, entry: ConfigEntry):
-    """将配置的区域映射应用到 HA 设备注册表。"""
-    device_areas = entry.options.get(CONF_DEVICE_AREAS, {})
-    if not device_areas:
-        _LOGGER.debug("未配置设备区域映射")
-        return
-
-    _LOGGER.debug(f"应用设备区域映射: {device_areas}")
-    
-    device_registry = dr.async_get(hass)
-    
-    for device_id, area_id in device_areas.items():
-        if not area_id:
+        if device_entry is None or device_entry.area_id is not None:
             continue
-        
-        device = device_registry.async_get_device(identifiers={(DOMAIN, device_id)})
-        if device:
-            _LOGGER.info(f"设置设备 {device_id} 的区域为 {area_id}")
-            device_registry.async_update_device(
-                device.id,
-                area_id=area_id,
-            )
+
+        # 兼容旧版首次导入映射，但不恢复已删除的区域或覆盖明确的未分配设置。
+        if device_id in device_areas:
+            area_id = device_areas[device_id]
+            if area_id is None:
+                continue
+            area = area_registry.async_get_area(area_id)
+            if area is None:
+                continue
         else:
-            _LOGGER.warning(f"未找到设备: {device_id}")
+            room_name = device.get("room_name")
+            if not room_name:
+                continue
+            area = area_registry.async_get_area_by_name(room_name)
+            if area is None:
+                area = area_registry.async_create(room_name)
+        device_registry.async_update_device(device_entry.id, area_id=area.id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
